@@ -1,0 +1,55 @@
+# Build artifacts
+bin/
+obj/
+out/
+TestResults/
+coverage/
+*.coverage
+*.trx
+
+# User-specific IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userprefs
+*.rsuser
+*.sln.docstates
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.local.json
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Rider / ReSharper
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# Node artifacts (if frontend tooling is added later)
+node_modules/
+
+# Azure and infra local state
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Local sqlite/dev databases
+*.db
+*.db-shm
+*.db-wal

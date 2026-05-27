@@ -1,0 +1,6 @@
+@PatchMindAI.API_HostAddress = http://localhost:5293
+
+GET {{PatchMindAI.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Moq" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\PatchMindAI.API\PatchMindAI.API.csproj" />
+    <ProjectReference Include="..\..\src\PatchMindAI.Core\PatchMindAI.Core.csproj" />
+    <ProjectReference Include="..\..\src\PatchMindAI.Infrastructure\PatchMindAI.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\PatchMindAI.Agents\PatchMindAI.Agents.csproj" />
+  </ItemGroup>
+
+</Project>

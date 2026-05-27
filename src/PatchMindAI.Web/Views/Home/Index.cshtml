@@ -1,0 +1,443 @@
+@model PatchMindAI.Web.Models.Analysis.HomeAnalysisViewModel
+@{
+    ViewData["Title"] = "PatchMindAI Dashboard";
+}
+
+<div class="row g-4">
+    <div class="col-lg-6">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h2 class="h4 mb-3">Run CVE Analysis</h2>
+                <p class="text-muted">Submit a CVE and track job progress every 3 seconds.</p>
+
+                <div class="mb-3">
+                    <label for="cveId" class="form-label">CVE Id</label>
+                    <input id="cveId" class="form-control" value="@Model.DefaultCveId" />
+                </div>
+
+                <div class="mb-3">
+                    <label for="userQuery" class="form-label">Prompt</label>
+                    <textarea id="userQuery" class="form-control" rows="3" placeholder="Example: What are the top 5 critical unpatched vulnerabilities on internet-facing systems?"></textarea>
+                </div>
+
+                <div class="d-flex gap-2 flex-wrap">
+                    <button id="startBtn" class="btn btn-primary">Start Analysis</button>
+                    <button id="promptBtn" class="btn btn-outline-primary">Run Prompt Analysis</button>
+                </div>
+                <span id="busyBadge" class="badge text-bg-warning ms-2 d-none">Processing</span>
+
+                <div id="errorBox" class="alert alert-danger mt-3 d-none" role="alert"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h2 class="h4 mb-3">Job Status</h2>
+                <dl class="row mb-0">
+                    <dt class="col-4">Job Id</dt>
+                    <dd id="jobIdText" class="col-8">-</dd>
+
+                    <dt class="col-4">State</dt>
+                    <dd id="jobStateText" class="col-8">-</dd>
+
+                    <dt class="col-4">CVE</dt>
+                    <dd id="jobCveText" class="col-8">-</dd>
+
+                    <dt class="col-4">Prompt Match</dt>
+                    <dd id="promptMatchText" class="col-8">-</dd>
+
+                    <dt class="col-4">Confidence</dt>
+                    <dd id="promptConfidenceText" class="col-8">-</dd>
+
+                    <dt class="col-4">Resolution</dt>
+                    <dd id="promptResolutionText" class="col-8">-</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm mt-4">
+    <div class="card-body">
+        <h2 class="h4 mb-3">Analysis Result</h2>
+        
+        <div id="resultEmpty" class="bg-light border rounded p-3 text-muted">
+            No result yet.
+        </div>
+
+        <div id="resultTabs" class="d-none">
+            <ul class="nav nav-tabs mb-3" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="risk-tab" data-bs-toggle="tab" data-bs-target="#risk-content" type="button" role="tab">
+                        🔴 Risk Assessment
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="impact-tab" data-bs-toggle="tab" data-bs-target="#impact-content" type="button" role="tab">
+                        📊 Impact Analysis
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="remediation-tab" data-bs-toggle="tab" data-bs-target="#remediation-content" type="button" role="tab">
+                        🛠️ Remediation Steps
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="raw-tab" data-bs-toggle="tab" data-bs-target="#raw-content" type="button" role="tab">
+                        📋 Raw JSON
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="citations-tab" data-bs-toggle="tab" data-bs-target="#citations-content" type="button" role="tab">
+                        🔎 Citations
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content">
+                <!-- Risk Tab -->
+                <div class="tab-pane fade show active" id="risk-content" role="tabpanel">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5>Risk Score</h5>
+                            <div id="riskScoreGauge" class="d-flex align-items-center gap-3">
+                                <div class="fs-1 fw-bold" id="riskScoreValue">-</div>
+                                <div id="riskSeverityBadge" class="badge text-bg-secondary">-</div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h5>Severity</h5>
+                            <p id="riskSeverityText" class="text-muted mb-0">-</p>
+                        </div>
+                    </div>
+                    <hr />
+                    <h5>Risk Justification</h5>
+                    <p id="riskJustification" class="mb-0">-</p>
+                </div>
+
+                <!-- Impact Tab -->
+                <div class="tab-pane fade" id="impact-content" role="tabpanel">
+                    <h5>Impact Summary</h5>
+                    <p id="impactSummary" class="mb-3">-</p>
+                    
+                    <h5>Affected Assets</h5>
+                    <ul id="affectedAssetsList" class="list-group">
+                        <li class="list-group-item text-muted">No assets listed</li>
+                    </ul>
+                </div>
+
+                <!-- Remediation Tab -->
+                <div class="tab-pane fade" id="remediation-content" role="tabpanel">
+                    <div id="remediationStepsList" class="list-group">
+                        <div class="list-group-item text-muted">No remediation steps</div>
+                    </div>
+                </div>
+
+                <!-- Raw JSON Tab -->
+                <div class="tab-pane fade" id="raw-content" role="tabpanel">
+                    <pre id="resultRawJson" class="bg-light border rounded p-3 mb-0" style="max-height: 400px; overflow-y: auto;">-</pre>
+                </div>
+
+                <!-- Citations Tab -->
+                <div class="tab-pane fade" id="citations-content" role="tabpanel">
+                    <div id="citationEmpty" class="text-muted">No citations found.</div>
+                    <div id="citationList" class="list-group d-none"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+(() => {
+    const startBtn = document.getElementById("startBtn");
+    const promptBtn = document.getElementById("promptBtn");
+    const busyBadge = document.getElementById("busyBadge");
+    const errorBox = document.getElementById("errorBox");
+    const cveInput = document.getElementById("cveId");
+    const queryInput = document.getElementById("userQuery");
+    const jobIdText = document.getElementById("jobIdText");
+    const jobStateText = document.getElementById("jobStateText");
+    const jobCveText = document.getElementById("jobCveText");
+    const promptMatchText = document.getElementById("promptMatchText");
+    const promptConfidenceText = document.getElementById("promptConfidenceText");
+    const promptResolutionText = document.getElementById("promptResolutionText");
+    const citationEmpty = document.getElementById("citationEmpty");
+    const citationList = document.getElementById("citationList");
+
+    let pollHandle = null;
+
+    const setBusy = (isBusy) => {
+        busyBadge.classList.toggle("d-none", !isBusy);
+        startBtn.disabled = isBusy;
+        promptBtn.disabled = isBusy;
+    };
+
+    const showError = (message) => {
+        errorBox.textContent = message;
+        errorBox.classList.remove("d-none");
+    };
+
+    const clearError = () => {
+        errorBox.textContent = "";
+        errorBox.classList.add("d-none");
+    };
+
+    const stopPolling = () => {
+        if (pollHandle !== null) {
+            clearInterval(pollHandle);
+            pollHandle = null;
+        }
+    };
+
+    const resetPromptResolution = () => {
+        promptMatchText.textContent = "-";
+        promptConfidenceText.textContent = "-";
+        promptResolutionText.textContent = "-";
+    };
+
+    const fetchJson = async (url, options) => {
+        const response = await fetch(url, options);
+        const payload = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(payload.error || payload.detail || `Request failed: ${response.status}`);
+        }
+
+        return payload;
+    };
+
+    const getRiskSeverity = (score) => {
+        if (score >= 9.0) return { badge: "danger", label: "Critical", emoji: "🔴" };
+        if (score >= 7.0) return { badge: "warning", label: "High", emoji: "🟠" };
+        if (score >= 4.0) return { badge: "info", label: "Medium", emoji: "🟡" };
+        return { badge: "success", label: "Low", emoji: "🟢" };
+    };
+
+    const formatRemediationSteps = (stepsJson) => {
+        try {
+            const steps = JSON.parse(stepsJson);
+            if (!Array.isArray(steps)) return [];
+            return steps;
+        } catch {
+            return [];
+        }
+    };
+
+    const formatAffectedAssets = (assetsJson) => {
+        try {
+            const assets = JSON.parse(assetsJson);
+            if (!Array.isArray(assets)) return [];
+            return assets;
+        } catch {
+            return [];
+        }
+    };
+
+    const formatCitations = (rawAgentOutputJson) => {
+        try {
+            const payload = typeof rawAgentOutputJson === "string"
+                ? JSON.parse(rawAgentOutputJson)
+                : rawAgentOutputJson;
+
+            const chunks = payload?.retrievedChunks;
+            if (!Array.isArray(chunks)) return [];
+
+            return chunks;
+        } catch {
+            return [];
+        }
+    };
+
+    const renderResult = (payload) => {
+        const resultEmpty = document.getElementById("resultEmpty");
+        const resultTabs = document.getElementById("resultTabs");
+        const resultRawJson = document.getElementById("resultRawJson");
+
+        // Hide empty state, show tabs
+        resultEmpty.classList.add("d-none");
+        resultTabs.classList.remove("d-none");
+
+        // Raw JSON
+        resultRawJson.textContent = JSON.stringify(payload, null, 2);
+
+        const citations = formatCitations(payload.rawAgentOutputJson);
+        citationList.innerHTML = "";
+        if (citations.length > 0) {
+            citationEmpty.classList.add("d-none");
+            citationList.classList.remove("d-none");
+            citations.forEach((citation, idx) => {
+                const sourceId = citation.sourceId || citation.SourceId || `Source ${idx + 1}`;
+                const score = citation.score ?? citation.Score ?? 0;
+                const text = citation.text || citation.Text || "-";
+
+                const item = document.createElement("div");
+                item.className = "list-group-item";
+                item.innerHTML = `
+                    <div class="d-flex justify-content-between gap-3">
+                        <div>
+                            <div class="fw-semibold">${sourceId}</div>
+                            <div class="text-muted small mt-1">Score: ${Number(score).toFixed(3)}</div>
+                        </div>
+                    </div>
+                    <p class="mb-0 mt-2">${text}</p>
+                `;
+                citationList.appendChild(item);
+            });
+        } else {
+            citationEmpty.classList.remove("d-none");
+            citationList.classList.add("d-none");
+        }
+
+        // Risk Tab
+        const severity = getRiskSeverity(payload.riskScore);
+        document.getElementById("riskScoreValue").textContent = payload.riskScore.toFixed(1);
+        document.getElementById("riskSeverityBadge").textContent = severity.label;
+        document.getElementById("riskSeverityBadge").className = `badge text-bg-${severity.badge}`;
+        document.getElementById("riskSeverityText").textContent = `${severity.emoji} ${severity.label}`;
+        document.getElementById("riskJustification").textContent = payload.riskJustification || "-";
+
+        // Impact Tab
+        document.getElementById("impactSummary").textContent = payload.impactSummary || "-";
+        
+        const assetsList = document.getElementById("affectedAssetsList");
+        assetsList.innerHTML = "";
+        const assets = formatAffectedAssets(payload.affectedAssetsJson);
+        if (assets.length > 0) {
+            assets.forEach(asset => {
+                const li = document.createElement("li");
+                li.className = "list-group-item";
+                li.textContent = asset;
+                assetsList.appendChild(li);
+            });
+        } else {
+            const li = document.createElement("li");
+            li.className = "list-group-item text-muted";
+            li.textContent = "No assets listed";
+            assetsList.appendChild(li);
+        }
+
+        // Remediation Tab
+        const remediationList = document.getElementById("remediationStepsList");
+        remediationList.innerHTML = "";
+        const steps = formatRemediationSteps(payload.remediationStepsJson);
+        if (steps.length > 0) {
+            steps.forEach((step, idx) => {
+                const div = document.createElement("div");
+                div.className = "list-group-item";
+                
+                const priorityBadge = step.priority === "Critical" ? "danger" : 
+                                     step.priority === "High" ? "warning" : 
+                                     step.priority === "Medium" ? "info" : "success";
+                
+                div.innerHTML = `
+                    <div class="d-flex align-items-start gap-2">
+                        <span class="badge text-bg-${priorityBadge} mt-1">${step.priority || "Medium"}</span>
+                        <div class="flex-grow-1">
+                            <p class="mb-0"><strong>Step ${idx + 1}:</strong> ${step.action || "-"}</p>
+                        </div>
+                    </div>
+                `;
+                remediationList.appendChild(div);
+            });
+        } else {
+            const div = document.createElement("div");
+            div.className = "list-group-item text-muted";
+            div.textContent = "No remediation steps";
+            remediationList.appendChild(div);
+        }
+    };
+
+    const loadResult = async (jobId) => {
+        const payload = await fetchJson(`/home/jobresult/${jobId}`);
+        renderResult(payload);
+    };
+
+    const pollPromptStatus = async (jobId) => {
+        const status = await fetchJson(`/home/jobstatus/${jobId}`);
+        jobStateText.textContent = status.status;
+        jobCveText.textContent = status.cveId;
+
+        if (status.status === "Completed") {
+            stopPolling();
+            await loadResult(jobId);
+            setBusy(false);
+        } else if (status.status === "Failed") {
+            stopPolling();
+            setBusy(false);
+            showError(status.failureReason || "Analysis failed.");
+        }
+    };
+
+    const pollStatus = async (jobId) => {
+        const status = await fetchJson(`/home/jobstatus/${jobId}`);
+        jobStateText.textContent = status.status;
+        jobCveText.textContent = status.cveId;
+
+        if (status.status === "Completed") {
+            stopPolling();
+            await loadResult(jobId);
+            setBusy(false);
+        } else if (status.status === "Failed") {
+            stopPolling();
+            setBusy(false);
+            showError(status.failureReason || "Analysis failed.");
+        }
+    };
+
+    const startAnalysis = async (isPromptMode) => {
+        clearError();
+        stopPolling();
+        setBusy(true);
+        resetPromptResolution();
+        jobStateText.textContent = "Queued";
+        jobCveText.textContent = cveInput.value;
+
+        try {
+            const endpoint = isPromptMode ? "/home/createprompt" : "/home/createjob";
+            const payload = isPromptMode
+                ? { question: queryInput.value }
+                : { cveId: cveInput.value, userQuery: queryInput.value };
+
+            const created = await fetchJson(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            jobIdText.textContent = created.jobId;
+            jobStateText.textContent = created.status;
+            promptMatchText.textContent = created.matchedCveId || cveInput.value || "-";
+            promptConfidenceText.textContent = created.confidence !== undefined ? created.confidence.toFixed(2) : "-";
+            promptResolutionText.textContent = created.explanation || created.status;
+
+            pollHandle = setInterval(() => {
+                const poller = isPromptMode ? pollPromptStatus : pollStatus;
+                poller(created.jobId).catch((err) => {
+                    stopPolling();
+                    setBusy(false);
+                    showError(err.message);
+                });
+            }, 3000);
+
+            const poller = isPromptMode ? pollPromptStatus : pollStatus;
+            await poller(created.jobId);
+        } catch (err) {
+            setBusy(false);
+            showError(err.message || "Unable to create analysis job.");
+        }
+    };
+
+    startBtn.addEventListener("click", async () => {
+        await startAnalysis(false);
+    });
+
+    promptBtn.addEventListener("click", async () => {
+        await startAnalysis(true);
+    });
+})();
+</script>
+}
