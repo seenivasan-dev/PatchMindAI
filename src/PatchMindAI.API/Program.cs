@@ -74,8 +74,20 @@ using (var scope = app.Services.CreateScope())
     var context = scope.ServiceProvider.GetRequiredService<PatchMindDbContext>();
     context.Database.Migrate();
 
-    var seeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
-    await seeder.SeedAsync();
+    var dbSeeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
+    await dbSeeder.SeedAsync();
+
+    // Seed Azure Search index if configured
+    var searchSeeder = scope.ServiceProvider.GetService<AzureSearchSeeder>();
+    if (searchSeeder != null)
+    {
+        await searchSeeder.SeedAsync();
+    }
+    else
+    {
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        logger.LogInformation("AzureSearchSeeder not registered (Azure Search not configured). Skipping search index seeding.");
+    }
 }
 
 if (app.Environment.IsDevelopment())

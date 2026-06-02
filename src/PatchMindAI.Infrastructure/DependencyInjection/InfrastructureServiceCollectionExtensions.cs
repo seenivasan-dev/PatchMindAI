@@ -38,6 +38,7 @@ public static class InfrastructureServiceCollectionExtensions
         {
             services.AddSingleton(_ => CreateSearchClient(azureSearchOptions));
             services.AddSingleton<IKnowledgeRetriever, AzureSearchKnowledgeRetriever>();
+            services.AddScoped<AzureSearchSeeder>();
         }
         else
         {
