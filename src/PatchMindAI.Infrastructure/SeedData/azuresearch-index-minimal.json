@@ -1,0 +1,60 @@
+{
+  "name": "patchmindai-cve-index",
+  "fields": [
+    {
+      "name": "id",
+      "type": "Edm.String",
+      "key": true,
+      "searchable": false,
+      "retrievable": true,
+      "sortable": false,
+      "filterable": false,
+      "facetable": false
+    },
+    {
+      "name": "title",
+      "type": "Edm.String",
+      "searchable": true,
+      "retrievable": true,
+      "sortable": false,
+      "filterable": false,
+      "facetable": false
+    },
+    {
+      "name": "content",
+      "type": "Edm.String",
+      "searchable": true,
+      "retrievable": true,
+      "sortable": false,
+      "filterable": false,
+      "facetable": false
+    },
+    {
+      "name": "severity",
+      "type": "Edm.String",
+      "searchable": true,
+      "retrievable": true,
+      "sortable": true,
+      "filterable": true,
+      "facetable": true
+    },
+    {
+      "name": "baseScore",
+      "type": "Edm.Double",
+      "searchable": false,
+      "retrievable": true,
+      "sortable": true,
+      "filterable": true,
+      "facetable": true
+    },
+    {
+      "name": "cveId",
+      "type": "Edm.String",
+      "searchable": true,
+      "retrievable": true,
+      "sortable": true,
+      "filterable": true,
+      "facetable": true
+    }
+  ]
+}

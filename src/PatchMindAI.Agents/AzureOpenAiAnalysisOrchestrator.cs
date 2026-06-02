@@ -34,6 +34,10 @@ public sealed class AzureOpenAiAnalysisOrchestrator : IAnalysisOrchestrator
             throw new InvalidOperationException("AzureOpenAI endpoint and deployment name must be configured for the Azure orchestrator.");
         }
 
+        var apiVersion = string.IsNullOrWhiteSpace(azureOptions.ApiVersion)
+            ? null
+            : azureOptions.ApiVersion;
+
         _kernel = Kernel.CreateBuilder().Build();
 
         if (!string.IsNullOrWhiteSpace(azureOptions.ApiKey))
@@ -45,7 +49,7 @@ public sealed class AzureOpenAiAnalysisOrchestrator : IAnalysisOrchestrator
                 azureOptions.Model,
                 httpClient: null,
                 loggerFactory,
-                azureOptions.ApiVersion);
+                apiVersion);
             return;
         }
 
@@ -57,11 +61,11 @@ public sealed class AzureOpenAiAnalysisOrchestrator : IAnalysisOrchestrator
         _chatService = new AzureOpenAIChatCompletionService(
             azureOptions.DeploymentName,
             azureOptions.Endpoint,
-            new DefaultAzureCredential(),
+            CreateTokenCredential(),
             azureOptions.Model,
             httpClient: null,
             loggerFactory,
-            azureOptions.ApiVersion);
+            apiVersion);
     }
 
     public async Task<AnalysisResult> RunAsync(AnalysisJob job, CancellationToken cancellationToken = default)
@@ -195,5 +199,15 @@ Retrieved citations:
     private static string ReadRawJson(JsonElement element, string propertyName, string fallback)
     {
         return element.TryGetProperty(propertyName, out var prop) ? prop.GetRawText() : fallback;
+    }
+
+    private static Azure.Core.TokenCredential CreateTokenCredential()
+    {
+        return new ChainedTokenCredential(
+            new AzureCliCredential(),
+            new DefaultAzureCredential(new DefaultAzureCredentialOptions
+            {
+                ExcludeAzureCliCredential = true
+            }));
     }
 }

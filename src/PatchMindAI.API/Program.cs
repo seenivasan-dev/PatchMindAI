@@ -11,6 +11,7 @@ using PatchMindAI.Core.Configuration;
 using PatchMindAI.Core.Interfaces;
 using PatchMindAI.Infrastructure.Data;
 using PatchMindAI.Infrastructure.DependencyInjection;
+using PatchMindAI.Infrastructure.SeedData;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<ServiceBusOptions>(builder.Configuration.GetSection(ServiceBusOptions.SectionName));
@@ -23,10 +24,9 @@ builder.Services.AddHostedService(provider =>
 {
     var queue = provider.GetRequiredService<IAnalysisJobQueue>();
     var cache = provider.GetRequiredService<IAnalysisCache>();
-    var orchestrator = provider.GetRequiredService<IAnalysisOrchestrator>();
     var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
     var logger = provider.GetRequiredService<ILogger<AnalysisJobWorker>>();
-    return new AnalysisJobWorker(queue, cache, orchestrator, scopeFactory, logger);
+    return new AnalysisJobWorker(queue, cache, scopeFactory, logger);
 });
 builder.Services.AddControllers();
 builder.Services.Configure<ApiBehaviorOptions>(options =>
@@ -68,11 +68,14 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Apply database migrations on startup
+// Apply database migrations and seed data on startup
 using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<PatchMindDbContext>();
     context.Database.Migrate();
+
+    var seeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
+    await seeder.SeedAsync();
 }
 
 if (app.Environment.IsDevelopment())

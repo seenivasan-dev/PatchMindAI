@@ -11,4 +11,11 @@ public sealed class AgentSettings
     public bool EnableRag { get; set; }
 
     public int ToolCallDepthLimit { get; set; } = 4;
+
+    public bool RequireAzurePipeline { get; set; }
+    
+    /// <summary>
+    /// Enable multi-agent architecture with intent routing.
+    /// </summary>
+    public bool EnableMultiAgentArchitecture { get; set; }
 }

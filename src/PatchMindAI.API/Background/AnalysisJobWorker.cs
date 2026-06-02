@@ -8,20 +8,17 @@ public sealed class AnalysisJobWorker : BackgroundService
 {
     private readonly IAnalysisJobQueue _queue;
     private readonly IAnalysisCache _cache;
-    private readonly IAnalysisOrchestrator _orchestrator;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ILogger<AnalysisJobWorker> _logger;
 
     public AnalysisJobWorker(
         IAnalysisJobQueue queue,
         IAnalysisCache cache,
-        IAnalysisOrchestrator orchestrator,
         IServiceScopeFactory serviceScopeFactory,
         ILogger<AnalysisJobWorker> logger)
     {
         _queue = queue;
         _cache = cache;
-        _orchestrator = orchestrator;
         _serviceScopeFactory = serviceScopeFactory;
         _logger = logger;
     }
@@ -38,6 +35,7 @@ public sealed class AnalysisJobWorker : BackgroundService
             {
                 var jobRepository = scope.ServiceProvider.GetRequiredService<IAnalysisJobRepository>();
                 var resultRepository = scope.ServiceProvider.GetRequiredService<IAnalysisResultRepository>();
+                var orchestrator = scope.ServiceProvider.GetRequiredService<IAnalysisOrchestrator>();
 
                 var job = await jobRepository.GetByIdAsync(message.JobId, stoppingToken);
 
@@ -55,7 +53,7 @@ public sealed class AnalysisJobWorker : BackgroundService
                 try
                 {
                     _logger.LogInformation("Processing analysis job {JobId} for CVE {CveId}", job.Id, job.CveId);
-                    var result = await _orchestrator.RunAsync(job, stoppingToken);
+                    var result = await orchestrator.RunAsync(job, stoppingToken);
 
                     await resultRepository.SaveAsync(result, stoppingToken);
                     await _cache.SetResultAsync(result, stoppingToken);

@@ -12,6 +12,7 @@ using PatchMindAI.Infrastructure.Clients;
 using PatchMindAI.Infrastructure.Data;
 using PatchMindAI.Infrastructure.Queues;
 using PatchMindAI.Infrastructure.Repositories;
+using PatchMindAI.Infrastructure.SeedData;
 using PatchMindAI.Infrastructure.Services;
 using StackExchange.Redis;
 
@@ -21,8 +22,13 @@ public static class InfrastructureServiceCollectionExtensions
 {
     public static IServiceCollection AddPatchMindInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddSingleton<INvdClient, MockNvdClient>();
-        services.AddSingleton<ICvePromptResolver, CvePromptResolver>();
+        var agentSettings = configuration.GetSection(AgentSettings.SectionName).Get<AgentSettings>()
+            ?? new AgentSettings();
+
+        // Use EF-backed CVE repository instead of mock
+        services.AddScoped<INvdClient, EfCveRepository>();
+        services.AddScoped<ICvePromptResolver, CvePromptResolver>();
+        services.AddScoped<PatchMindDbSeeder>();
         services.Configure<AzureSearchOptions>(configuration.GetSection(AzureSearchOptions.SectionName));
 
         var azureSearchOptions = configuration.GetSection(AzureSearchOptions.SectionName).Get<AzureSearchOptions>()
@@ -35,6 +41,12 @@ public static class InfrastructureServiceCollectionExtensions
         }
         else
         {
+            if (agentSettings.RequireAzurePipeline)
+            {
+                throw new InvalidOperationException(
+                    "AgentSettings:RequireAzurePipeline is true, but AzureSearch endpoint/index are not fully configured.");
+            }
+
             services.AddSingleton<IKnowledgeRetriever, CveKnowledgeRetriever>();
         }
 
@@ -104,9 +116,19 @@ public static class InfrastructureServiceCollectionExtensions
 
         if (options.UseManagedIdentity)
         {
-            return new SearchClient(endpoint, options.IndexName, new DefaultAzureCredential());
+            return new SearchClient(endpoint, options.IndexName, CreateTokenCredential());
         }
 
         throw new InvalidOperationException("AzureSearch requires either ApiKey or UseManagedIdentity=true when enabled.");
+    }
+
+    private static Azure.Core.TokenCredential CreateTokenCredential()
+    {
+        return new ChainedTokenCredential(
+            new AzureCliCredential(),
+            new DefaultAzureCredential(new DefaultAzureCredentialOptions
+            {
+                ExcludeAzureCliCredential = true
+            }));
     }
 }

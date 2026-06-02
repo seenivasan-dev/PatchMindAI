@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using PatchMindAI.Infrastructure.Data;
 
@@ -10,9 +11,11 @@ using PatchMindAI.Infrastructure.Data;
 namespace PatchMindAI.Infrastructure.Migrations
 {
     [DbContext(typeof(PatchMindDbContext))]
-    partial class PatchMindDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260602165136_AddAuditLogTable")]
+    partial class AddAuditLogTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.8");
