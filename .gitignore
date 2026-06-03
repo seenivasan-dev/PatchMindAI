@@ -44,6 +44,10 @@ _ReSharper*/
 # Node artifacts (if frontend tooling is added later)
 node_modules/
 
+#Publish artifacts
+publish/
+publish-web/
+
 # Azure and infra local state
 .terraform/
 *.tfstate
