@@ -1,6 +1,10 @@
+using Azure;
 using Azure.Search.Documents;
+using Azure.Search.Documents.Indexes;
+using Azure.Search.Documents.Indexes.Models;
 using Azure.Search.Documents.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using PatchMindAI.Core.Domain;
 using PatchMindAI.Infrastructure.Data;
@@ -9,32 +13,41 @@ namespace PatchMindAI.Infrastructure.SeedData;
 
 /// <summary>
 /// Seeds CVE data from the SQL database into Azure AI Search for knowledge retrieval.
+/// Automatically creates the index if it doesn't exist.
 /// </summary>
 public sealed class AzureSearchSeeder
 {
     private readonly SearchClient _searchClient;
+    private readonly SearchIndexClient _indexClient;
     private readonly PatchMindDbContext _context;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<AzureSearchSeeder> _logger;
 
     public AzureSearchSeeder(
         SearchClient searchClient,
+        SearchIndexClient indexClient,
         PatchMindDbContext context,
+        IConfiguration configuration,
         ILogger<AzureSearchSeeder> logger)
     {
         _searchClient = searchClient;
+        _indexClient = indexClient;
         _context = context;
+        _configuration = configuration;
         _logger = logger;
     }
 
     /// <summary>
-    /// Seeds CVE documents from SQL database to Azure Search index.
-    /// Skips seeding if documents already exist in the index.
+    /// Ensures the index exists and seeds CVE documents from SQL database.
     /// </summary>
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            // 1. Check if index already has documents
+            // 1. Ensure index exists
+            await EnsureIndexExistsAsync(cancellationToken);
+
+            // 2. Check if index already has documents
             var countResult = await _searchClient.SearchAsync<SearchDocument>("*",
                 new SearchOptions { Size = 0, IncludeTotalCount = true },
                 cancellationToken);
@@ -49,7 +62,7 @@ public sealed class AzureSearchSeeder
 
             _logger.LogInformation("Starting Azure Search index seeding...");
 
-            // 2. Fetch all CVEs from SQL database
+            // 3. Fetch all CVEs from SQL database
             var cves = await _context.Cves.ToListAsync(cancellationToken);
 
             if (cves.Count == 0)
@@ -58,7 +71,7 @@ public sealed class AzureSearchSeeder
                 return;
             }
 
-            // 3. Map CVE entities to SearchDocument format
+            // 4. Map CVE entities to SearchDocument format
             var documents = cves.Select(cve => new SearchDocument
             {
                 ["id"] = cve.Id,
@@ -71,7 +84,7 @@ public sealed class AzureSearchSeeder
                 ["lastModifiedAtUtc"] = cve.LastModifiedAtUtc
             }).ToList();
 
-            // 4. Batch upload to Azure Search (max 1000 docs per batch)
+            // 5. Batch upload to Azure Search (max 1000 docs per batch)
             var batches = documents.Chunk(1000);
             var totalUploaded = 0;
 
@@ -81,89 +94,93 @@ public sealed class AzureSearchSeeder
                     batch,
                     cancellationToken: cancellationToken);
 
-                totalUploaded += batch.Length;
-                _logger.LogInformation(
-                    "Uploaded batch of {BatchSize} documents ({Total}/{TotalCount})",
-                    batch.Length, totalUploaded, documents.Count);
+                totalUploaded += uploadResult.Value.Results.Count;
             }
 
             _logger.LogInformation(
-                "Azure Search seeding completed. Uploaded {Count} CVE documents",
-                cves.Count);
+                "Successfully seeded {Count} CVE documents to Azure Search",
+                totalUploaded);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Failed to seed Azure Search index. The application will continue, but knowledge retrieval may return empty results.");
-            // Don't throw - allow app to start even if Azure Search seeding fails
+            _logger.LogError(ex, "Failed to seed Azure Search index");
+            throw;
         }
     }
 
-    /// <summary>
-    /// Builds a searchable title from the CVE's first sentence.
-    /// </summary>
+    private async Task EnsureIndexExistsAsync(CancellationToken cancellationToken)
+    {
+        var indexName = _configuration["AzureSearch:IndexName"]!;
+
+        try
+        {
+            // Check if index exists
+            await _indexClient.GetIndexAsync(indexName, cancellationToken);
+            _logger.LogInformation("Azure Search index '{IndexName}' already exists", indexName);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Index doesn't exist, create it
+            _logger.LogInformation("Creating Azure Search index '{IndexName}'...", indexName);
+
+            var index = new SearchIndex(indexName)
+            {
+                Fields =
+                {
+                    new SimpleField("id", SearchFieldDataType.String) { IsKey = true, IsFilterable = true },
+                    new SearchableField("cveId") { IsFilterable = true },
+                    new SearchableField("title"),
+                    new SearchableField("content"),
+                    new SimpleField("severity", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+                    new SimpleField("baseScore", SearchFieldDataType.Double) { IsFilterable = true, IsSortable = true },
+                    new SimpleField("publishedAtUtc", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true },
+                    new SimpleField("lastModifiedAtUtc", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true }
+                }
+            };
+
+            await _indexClient.CreateIndexAsync(index, cancellationToken);
+            _logger.LogInformation("Successfully created Azure Search index '{IndexName}'", indexName);
+        }
+    }
+
     private static string BuildTitle(Cve cve)
     {
-        if (string.IsNullOrWhiteSpace(cve.Description))
-        {
-            return cve.Id;
-        }
-
         // Use first sentence of description as title
-        var sentences = cve.Description.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var firstSentence = sentences.Length > 0 ? sentences[0] : cve.Description;
-
-        // Truncate if too long
-        if (firstSentence.Length > 150)
-        {
-            firstSentence = firstSentence[..147] + "...";
-        }
-
-        return $"{cve.Id}: {firstSentence}";
+        var description = cve.Description ?? "";
+        var firstSentence = description.Split('.').FirstOrDefault()?.Trim();
+        return string.IsNullOrEmpty(firstSentence)
+            ? cve.Id
+            : $"{cve.Id}: {firstSentence}";
     }
 
-    /// <summary>
-    /// Builds rich searchable text combining all relevant CVE fields.
-    /// </summary>
     private static string BuildContentText(Cve cve)
     {
         var parts = new List<string>
         {
-            $"{cve.Id}: {cve.Description}"
+            $"CVE ID: {cve.Id}",
+            $"Description: {cve.Description}",
+            $"Severity: {cve.Severity}",
+            $"CVSS Score: {cve.BaseScore}",
+            $"Vector: {cve.VectorString}"
         };
 
-        // Add severity and score
-        parts.Add($"Severity: {cve.Severity}.");
-        parts.Add($"CVSS Base Score: {cve.BaseScore}.");
-
-        // Add vector string if available (e.g., "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H")
-        if (!string.IsNullOrWhiteSpace(cve.VectorString))
+        if (cve.AffectedProducts?.Any() == true)
         {
-            parts.Add($"CVSS Vector: {cve.VectorString}.");
+            parts.Add($"Affected Products: {string.Join(", ", cve.AffectedProducts)}");
         }
 
-        // Add affected products
-        if (cve.AffectedProducts?.Length > 0)
+        if (cve.Weaknesses?.Any() == true)
         {
-            parts.Add($"Affected Products: {string.Join(", ", cve.AffectedProducts)}.");
+            parts.Add($"Weaknesses: {string.Join(", ", cve.Weaknesses)}");
         }
 
-        // Add weaknesses
-        if (cve.Weaknesses?.Length > 0)
+        if (cve.References?.Any() == true)
         {
-            parts.Add($"Weaknesses: {string.Join(", ", cve.Weaknesses)}.");
+            parts.Add($"References: {string.Join(", ", cve.References)}");
         }
 
-        // Add references
-        if (cve.References?.Length > 0)
-        {
-            var limitedRefs = cve.References.Take(5); // Limit to first 5 to avoid bloat
-            parts.Add($"References: {string.Join("; ", limitedRefs)}.");
-        }
+        parts.Add($"Published: {cve.PublishedAtUtc:yyyy-MM-dd}");
 
-        // Add published date context
-        parts.Add($"Published: {cve.PublishedAtUtc:yyyy-MM-dd}.");
-
-        return string.Join(" ", parts);
+        return string.Join("\n", parts);
     }
 }

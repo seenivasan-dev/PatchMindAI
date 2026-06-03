@@ -1,7 +1,7 @@
 using Azure.Messaging.ServiceBus;
 using Azure.Search.Documents;
+using Azure.Search.Documents.Indexes;
 using Azure;
-using Azure.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +37,7 @@ public static class InfrastructureServiceCollectionExtensions
         if (!string.IsNullOrWhiteSpace(azureSearchOptions.Endpoint) && !string.IsNullOrWhiteSpace(azureSearchOptions.IndexName))
         {
             services.AddSingleton(_ => CreateSearchClient(azureSearchOptions));
+            services.AddSingleton(_ => CreateSearchIndexClient(azureSearchOptions));
             services.AddSingleton<IKnowledgeRetriever, AzureSearchKnowledgeRetriever>();
             services.AddScoped<AzureSearchSeeder>();
         }
@@ -53,9 +54,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         // Register DbContext
         var connectionString = configuration.GetConnectionString("PatchMindAIDb") 
-            ?? "Data Source=patchmindai.db";
+            ?? "Server=(localdb)\\mssqllocaldb;Database=PatchMindAI;Trusted_Connection=True;MultipleActiveResultSets=true";
         services.AddDbContext<PatchMindDbContext>(options =>
-            options.UseSqlite(connectionString)
+            options.UseSqlServer(connectionString)
         );
 
         // Use EF Core repositories (instead of in-memory)
@@ -88,7 +89,7 @@ public static class InfrastructureServiceCollectionExtensions
             }
             else if (!string.IsNullOrWhiteSpace(serviceBusOptions.FullyQualifiedNamespace))
             {
-                services.AddSingleton(_ => new ServiceBusClient(serviceBusOptions.FullyQualifiedNamespace, new DefaultAzureCredential()));
+                services.AddSingleton(_ => new ServiceBusClient(serviceBusOptions.FullyQualifiedNamespace, new global::Azure.Identity.DefaultAzureCredential()));
             }
             else
             {
@@ -123,11 +124,28 @@ public static class InfrastructureServiceCollectionExtensions
         throw new InvalidOperationException("AzureSearch requires either ApiKey or UseManagedIdentity=true when enabled.");
     }
 
+    private static SearchIndexClient CreateSearchIndexClient(AzureSearchOptions options)
+    {
+        var endpoint = new Uri(options.Endpoint);
+
+        if (!string.IsNullOrWhiteSpace(options.ApiKey))
+        {
+            return new SearchIndexClient(endpoint, new AzureKeyCredential(options.ApiKey));
+        }
+
+        if (options.UseManagedIdentity)
+        {
+            return new SearchIndexClient(endpoint, CreateTokenCredential());
+        }
+
+        throw new InvalidOperationException("AzureSearch requires either ApiKey or UseManagedIdentity=true when enabled.");
+    }
+
     private static Azure.Core.TokenCredential CreateTokenCredential()
     {
-        return new ChainedTokenCredential(
-            new AzureCliCredential(),
-            new DefaultAzureCredential(new DefaultAzureCredentialOptions
+        return new global::Azure.Identity.ChainedTokenCredential(
+            new global::Azure.Identity.AzureCliCredential(),
+            new global::Azure.Identity.DefaultAzureCredential(new global::Azure.Identity.DefaultAzureCredentialOptions
             {
                 ExcludeAzureCliCredential = true
             }));
