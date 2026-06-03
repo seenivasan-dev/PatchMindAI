@@ -47,22 +47,7 @@ public sealed class AzureSearchSeeder
             // 1. Ensure index exists
             await EnsureIndexExistsAsync(cancellationToken);
 
-            // 2. Check if index already has documents
-            var countResult = await _searchClient.SearchAsync<SearchDocument>("*",
-                new SearchOptions { Size = 0, IncludeTotalCount = true },
-                cancellationToken);
-
-            if (countResult.Value.TotalCount > 0)
-            {
-                _logger.LogInformation(
-                    "Azure Search index already has {Count} documents, skipping seed",
-                    countResult.Value.TotalCount);
-                return;
-            }
-
-            _logger.LogInformation("Starting Azure Search index seeding...");
-
-            // 3. Fetch all CVEs from SQL database
+            // 2. Fetch all CVEs from SQL database first
             var cves = await _context.Cves.ToListAsync(cancellationToken);
 
             if (cves.Count == 0)
@@ -71,7 +56,32 @@ public sealed class AzureSearchSeeder
                 return;
             }
 
-            // 4. Map CVE entities to SearchDocument format
+            // 3. Check if index already has correct number of documents
+            var countResult = await _searchClient.SearchAsync<SearchDocument>("*",
+                new SearchOptions { Size = 0, IncludeTotalCount = true },
+                cancellationToken);
+
+            if (countResult.Value.TotalCount == cves.Count)
+            {
+                _logger.LogInformation(
+                    "Azure Search index already has {Count} documents matching database, skipping seed",
+                    countResult.Value.TotalCount);
+                return;
+            }
+
+            // 4. If counts don't match, delete all existing documents and re-seed
+            if (countResult.Value.TotalCount > 0)
+            {
+                _logger.LogInformation(
+                    "Azure Search has {SearchCount} documents but database has {DbCount} CVEs. Clearing index...",
+                    countResult.Value.TotalCount, cves.Count);
+
+                await DeleteAllDocumentsAsync(cancellationToken);
+            }
+
+            _logger.LogInformation("Starting Azure Search index seeding with {Count} CVEs...", cves.Count);
+
+            // 5. Map CVE entities to SearchDocument format
             var documents = cves.Select(cve => new SearchDocument
             {
                 ["id"] = cve.Id,
@@ -84,7 +94,7 @@ public sealed class AzureSearchSeeder
                 ["lastModifiedAtUtc"] = cve.LastModifiedAtUtc
             }).ToList();
 
-            // 5. Batch upload to Azure Search (max 1000 docs per batch)
+            // 6. Batch upload to Azure Search (max 1000 docs per batch)
             var batches = documents.Chunk(1000);
             var totalUploaded = 0;
 
@@ -104,6 +114,38 @@ public sealed class AzureSearchSeeder
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to seed Azure Search index");
+            throw;
+        }
+    }
+
+    private async Task DeleteAllDocumentsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Search for all document IDs
+            var searchOptions = new SearchOptions
+            {
+                Size = 1000,
+                Select = { "id" }
+            };
+
+            var searchResults = await _searchClient.SearchAsync<SearchDocument>("*", searchOptions, cancellationToken);
+            var documentsToDelete = new List<SearchDocument>();
+
+            await foreach (var result in searchResults.Value.GetResultsAsync())
+            {
+                documentsToDelete.Add(new SearchDocument { ["id"] = result.Document["id"] });
+            }
+
+            if (documentsToDelete.Count > 0)
+            {
+                await _searchClient.DeleteDocumentsAsync(documentsToDelete, cancellationToken: cancellationToken);
+                _logger.LogInformation("Deleted {Count} documents from Azure Search index", documentsToDelete.Count);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to delete documents from Azure Search index");
             throw;
         }
     }
