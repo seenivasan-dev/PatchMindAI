@@ -64,6 +64,19 @@ builder.Services.AddApiVersioning(options =>
 });
 builder.Services.AddHealthChecks()
     .AddCheck<ProviderConfigurationHealthCheck>("provider_configuration", tags: ["ready"]);
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins(
+            "https://patchmindai-web.azurewebsites.net",
+            "http://localhost:5000",
+            "https://localhost:5001")
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials();
+    });
+});
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -98,6 +111,7 @@ if (app.Environment.IsDevelopment())
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<GlobalExceptionMiddleware>();
 app.UseHttpsRedirection();
+app.UseCors("AllowFrontend");
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
