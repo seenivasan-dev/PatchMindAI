@@ -128,10 +128,24 @@ public sealed class AnalysisJobWorker : BackgroundService
     private static bool IsTransientError(Exception ex)
     {
         // Check for rate limiting (429) and other transient errors
-        return ex is Microsoft.SemanticKernel.HttpOperationException httpEx
-            && (httpEx.StatusCode == System.Net.HttpStatusCode.TooManyRequests
-                || httpEx.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable
-                || httpEx.StatusCode == System.Net.HttpStatusCode.GatewayTimeout);
+        // HttpOperationException from Semantic Kernel doesn't expose StatusCode directly,
+        // so we parse the message format: "HTTP {code} (...)"
+        if (ex is Microsoft.SemanticKernel.HttpOperationException httpEx)
+        {
+            var message = httpEx.Message;
+            return message.Contains("HTTP 429") || 
+                   message.Contains("HTTP 503") || 
+                   message.Contains("HTTP 504") ||
+                   message.Contains("too_many_requests");
+        }
+        
+        // Also check inner exceptions
+        if (ex.InnerException != null)
+        {
+            return IsTransientError(ex.InnerException);
+        }
+        
+        return false;
     }
     
     private async Task<T> RetryWithBackoffAsync<T>(
