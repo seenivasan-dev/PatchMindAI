@@ -5,6 +5,7 @@ using Azure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using PatchMindAI.Core.Configuration;
 using PatchMindAI.Core.Interfaces;
 using PatchMindAI.Infrastructure.Caching;
@@ -97,7 +98,10 @@ public static class InfrastructureServiceCollectionExtensions
             }
 
             services.AddSingleton<IAnalysisJobQueue>(sp =>
-                new AzureServiceBusAnalysisJobQueue(sp.GetRequiredService<ServiceBusClient>(), serviceBusOptions.QueueName));
+            {
+                var logger = sp.GetService<ILogger<AzureServiceBusAnalysisJobQueue>>();
+                return new AzureServiceBusAnalysisJobQueue(sp.GetRequiredService<ServiceBusClient>(), serviceBusOptions.QueueName, logger);
+            });
         }
         else
         {
