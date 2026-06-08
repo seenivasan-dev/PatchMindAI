@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using PatchMindAI.Core.Domain;
 using PatchMindAI.Core.Enums;
@@ -12,6 +13,8 @@ namespace PatchMindAI.Agents;
 /// </summary>
 public sealed class MultiAgentOrchestrator : IAnalysisOrchestrator
 {
+    private static readonly Regex CveIdPattern = new(@"CVE-\d{4}-\d{4,7}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private readonly IPromptParserAgent _promptParser;
     private readonly IAnalysisOrchestrator _cveOrchestrator;
     private readonly IPrioritizationAgent _prioritizationAgent;
@@ -44,6 +47,17 @@ public sealed class MultiAgentOrchestrator : IAnalysisOrchestrator
 
         try
         {
+            if (CveIdPattern.IsMatch(job.UserQuery))
+            {
+                _logger.LogInformation("Early-exit to CVE orchestrator for exact CVE query in job {JobId}", job.Id);
+                return await HandleCveSearchAsync(job, new Core.Models.ParsedIntent
+                {
+                    Intent = QueryIntent.CveSearch,
+                    OriginalQuery = job.UserQuery,
+                    Confidence = 1.0
+                }, cancellationToken);
+            }
+
             // Step 1: Parse the user query to classify intent
             var parsedIntent = await _promptParser.ParseAsync(job.UserQuery, cancellationToken);
             

@@ -1,9 +1,8 @@
 using Azure;
-using Azure.Core;
 using Azure.Search.Documents;
 using Azure.Search.Documents.Models;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Text.Json;
 using PatchMindAI.Core.Configuration;
 using PatchMindAI.Core.Interfaces;
 
@@ -11,20 +10,60 @@ namespace PatchMindAI.Infrastructure.Services;
 
 public sealed class AzureSearchKnowledgeRetriever : IKnowledgeRetriever
 {
-    private readonly SearchClient _searchClient;
+    private readonly IAzureSearchQueryRunner _queryRunner;
     private readonly AzureSearchOptions _options;
+    private readonly ILogger<AzureSearchKnowledgeRetriever> _logger;
 
-    public AzureSearchKnowledgeRetriever(SearchClient searchClient, IOptions<AzureSearchOptions> options)
+    public AzureSearchKnowledgeRetriever(
+        IAzureSearchQueryRunner queryRunner,
+        IOptions<AzureSearchOptions> options,
+        ILogger<AzureSearchKnowledgeRetriever> logger)
     {
-        _searchClient = searchClient;
+        _queryRunner = queryRunner;
         _options = options.Value;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<RetrievedChunk>> RetrieveAsync(string query, int topK = 5, CancellationToken cancellationToken = default)
     {
+        var boundedTopK = Math.Clamp(topK, 1, 20);
+
+        if (_options.EnableVectorSearch && !string.IsNullOrWhiteSpace(query))
+        {
+            try
+            {
+                var vectorOptions = CreateBaseSearchOptions(boundedTopK);
+                var vectorQuery = new VectorizableTextQuery(query)
+                {
+                    KNearestNeighborsCount = boundedTopK
+                };
+                vectorQuery.Fields.Add(_options.VectorField);
+
+                vectorOptions.VectorSearch = new VectorSearchOptions();
+                vectorOptions.VectorSearch.Queries.Add(vectorQuery);
+
+                var vectorResults = await _queryRunner.SearchAsync(null, vectorOptions, cancellationToken);
+                if (vectorResults.Count > 0)
+                {
+                    _logger.LogDebug("Knowledge retrieval used vector search and returned {Count} chunks.", vectorResults.Count);
+                    return vectorResults;
+                }
+            }
+            catch (RequestFailedException ex)
+            {
+                _logger.LogWarning(ex, "Vector retrieval failed; falling back to lexical search.");
+            }
+        }
+
+        var lexicalOptions = CreateBaseSearchOptions(boundedTopK);
+        return await _queryRunner.SearchAsync(string.IsNullOrWhiteSpace(query) ? "*" : query, lexicalOptions, cancellationToken);
+    }
+
+    private SearchOptions CreateBaseSearchOptions(int topK)
+    {
         var searchOptions = new SearchOptions
         {
-            Size = Math.Clamp(topK, 1, 20),
+            Size = topK,
             QueryType = SearchQueryType.Simple,
             IncludeTotalCount = false
         };
@@ -37,44 +76,6 @@ public sealed class AzureSearchKnowledgeRetriever : IKnowledgeRetriever
             searchOptions.Select.Add(_options.TitleField);
         }
 
-        var response = await _searchClient.SearchAsync<SearchDocument>(string.IsNullOrWhiteSpace(query) ? "*" : query, searchOptions, cancellationToken);
-        var results = new List<RetrievedChunk>();
-
-        await foreach (var result in response.Value.GetResultsAsync().WithCancellation(cancellationToken))
-        {
-            var document = result.Document;
-            var sourceId = GetString(document, _options.SourceIdField) ?? "search-result";
-            var content = GetString(document, _options.ContentField) ?? document.ToString();
-            var title = string.IsNullOrWhiteSpace(_options.TitleField) ? null : GetString(document, _options.TitleField);
-
-            var snippet = string.IsNullOrWhiteSpace(title)
-                ? content
-                : $"{title}: {content}";
-
-            results.Add(new RetrievedChunk
-            {
-                SourceId = sourceId,
-                Text = snippet,
-                Score = result.Score ?? 0
-            });
-        }
-
-        return results;
-    }
-
-    private static string? GetString(SearchDocument document, string fieldName)
-    {
-        if (document.TryGetValue(fieldName, out var value) && value is not null)
-        {
-            return value switch
-            {
-                string text => text,
-                JsonElement json when json.ValueKind == JsonValueKind.String => json.GetString(),
-                JsonElement json => json.ToString(),
-                _ => value.ToString()
-            };
-        }
-
-        return null;
+        return searchOptions;
     }
 }

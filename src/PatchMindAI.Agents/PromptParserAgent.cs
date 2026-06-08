@@ -1,8 +1,12 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+using PatchMindAI.Core.Configuration;
 using PatchMindAI.Core.Enums;
 using PatchMindAI.Core.Interfaces;
 using PatchMindAI.Core.Models;
@@ -15,6 +19,8 @@ namespace PatchMindAI.Agents;
 public sealed class PromptParserAgent : IPromptParserAgent
 {
     private readonly IChatCompletionService _chatService;
+    private readonly IMemoryCache _cache;
+    private readonly AgentSettings _settings;
     private readonly ILogger<PromptParserAgent> _logger;
 
     private const string SystemPrompt = """
@@ -45,9 +51,13 @@ public sealed class PromptParserAgent : IPromptParserAgent
 
     public PromptParserAgent(
         IChatCompletionService chatService,
+        IMemoryCache cache,
+        IOptions<AgentSettings> options,
         ILogger<PromptParserAgent> logger)
     {
         _chatService = chatService;
+        _cache = cache;
+        _settings = options.Value;
         _logger = logger;
     }
 
@@ -63,19 +73,49 @@ public sealed class PromptParserAgent : IPromptParserAgent
             };
         }
 
-        // Try regex extraction first for common patterns
         var cveId = ExtractCveId(userQuery);
+        if (cveId is not null)
+        {
+            return new ParsedIntent
+            {
+                Intent = QueryIntent.CveSearch,
+                OriginalQuery = userQuery,
+                ExtractedCveId = cveId,
+                Confidence = 1.0
+            };
+        }
+
+        var normalizedQuery = Normalize(userQuery);
+        var cacheBucket = BuildWindowBucket(_settings.CacheTimeWindowMinutes);
+        var cacheKey = $"intent:{normalizedQuery}:{cacheBucket}";
+
+        if (_settings.IntentCacheTtlMinutes > 0
+            && _cache.TryGetValue(cacheKey, out ParsedIntent? cached)
+            && cached is not null)
+        {
+            _logger.LogDebug("Intent cache hit for query key {CacheKey}", cacheKey);
+            return cached;
+        }
         
         try
         {
             var chatHistory = new ChatHistory(SystemPrompt);
             chatHistory.AddUserMessage(userQuery);
 
-            var response = await _chatService.GetChatMessageContentAsync(
+            var executionSettings = new OpenAIPromptExecutionSettings
+            {
+                Temperature = 0,
+                TopP = 1,
+                MaxTokens = Math.Max(50, _settings.ParserMaxOutputTokens)
+            };
+
+            var responses = await _chatService.GetChatMessageContentsAsync(
                 chatHistory,
+                executionSettings,
+                kernel: null,
                 cancellationToken: cancellationToken);
 
-            var jsonContent = response.Content ?? "{}";
+            var jsonContent = responses.FirstOrDefault()?.Content ?? "{}";
             
             // Parse LLM response
             var parsed = JsonSerializer.Deserialize<IntentResponse>(jsonContent, new JsonSerializerOptions
@@ -89,7 +129,7 @@ public sealed class PromptParserAgent : IPromptParserAgent
                 return CreateFallbackIntent(userQuery, cveId);
             }
 
-            return new ParsedIntent
+            var result = new ParsedIntent
             {
                 Intent = ParseIntentEnum(parsed.Intent),
                 OriginalQuery = userQuery,
@@ -98,6 +138,31 @@ public sealed class PromptParserAgent : IPromptParserAgent
                 TopN = parsed.TopN ?? 10,
                 Confidence = parsed.Confidence
             };
+
+            if (_settings.IntentCacheTtlMinutes > 0)
+            {
+                _cache.Set(cacheKey, result, TimeSpan.FromMinutes(_settings.IntentCacheTtlMinutes));
+            }
+
+            var promptTokens = EstimateTokens(userQuery) + EstimateTokens(SystemPrompt);
+            var outputTokens = EstimateTokens(jsonContent);
+            var totalTokens = promptTokens + outputTokens;
+
+            _logger.LogInformation(
+                "TokenBudget parser: prompt={PromptTokens} output={OutputTokens} total={TotalTokens}",
+                promptTokens,
+                outputTokens,
+                totalTokens);
+
+            if (_settings.EnableTokenBudgeting && totalTokens > _settings.TokenWarningThreshold)
+            {
+                _logger.LogWarning(
+                    "TokenBudget threshold exceeded in parser stage: total={TotalTokens}, threshold={Threshold}",
+                    totalTokens,
+                    _settings.TokenWarningThreshold);
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
@@ -168,6 +233,30 @@ public sealed class PromptParserAgent : IPromptParserAgent
             OriginalQuery = userQuery,
             Confidence = 0.3
         };
+    }
+
+    private static int EstimateTokens(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        return Math.Max(1, text.Length / 4);
+    }
+
+    private static string Normalize(string value)
+    {
+        return string.Join(' ', value
+            .Trim()
+            .ToLowerInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static long BuildWindowBucket(int windowMinutes)
+    {
+        var safeWindowMinutes = Math.Max(1, windowMinutes);
+        return DateTimeOffset.UtcNow.ToUnixTimeSeconds() / (safeWindowMinutes * 60L);
     }
 
     private sealed class IntentResponse

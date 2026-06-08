@@ -9,11 +9,19 @@ public sealed class MockAnalysisOrchestrator : IAnalysisOrchestrator
 {
     private readonly INvdClient _nvdClient;
     private readonly IKnowledgeRetriever _knowledgeRetriever;
+    private readonly ISqlFactsProvider _sqlFactsProvider;
+    private readonly IDeterministicRiskScorer _riskScorer;
 
-    public MockAnalysisOrchestrator(INvdClient nvdClient, IKnowledgeRetriever knowledgeRetriever)
+    public MockAnalysisOrchestrator(
+        INvdClient nvdClient,
+        IKnowledgeRetriever knowledgeRetriever,
+        ISqlFactsProvider sqlFactsProvider,
+        IDeterministicRiskScorer riskScorer)
     {
         _nvdClient = nvdClient;
         _knowledgeRetriever = knowledgeRetriever;
+        _sqlFactsProvider = sqlFactsProvider;
+        _riskScorer = riskScorer;
     }
 
     public async Task<AnalysisResult> RunAsync(AnalysisJob job, CancellationToken cancellationToken = default)
@@ -33,7 +41,9 @@ public sealed class MockAnalysisOrchestrator : IAnalysisOrchestrator
             retrievedChunks = await _knowledgeRetriever.RetrieveAsync(job.CveId, 5, cancellationToken);
         }
 
-        var riskScore = Math.Max(cve.BaseScore, cve.Severity is SeverityLevel.Critical ? 9.5 : cve.BaseScore);
+        var sqlFacts = await _sqlFactsProvider.GetFactsForCveAsync(job.CveId, 10, cancellationToken);
+        var scoring = _riskScorer.Score(cve, sqlFacts);
+
         var remediation = new[]
         {
             new { priority = "Critical", action = $"Patch affected products listed for {cve.Id}." },
@@ -44,16 +54,18 @@ public sealed class MockAnalysisOrchestrator : IAnalysisOrchestrator
         {
             Id = Guid.NewGuid(),
             JobId = job.Id,
-            RiskScore = Math.Round(riskScore, 1),
-            RiskJustification = $"Risk is derived from base score {cve.BaseScore} and severity {cve.Severity}.",
-            ImpactSummary = $"{cve.Id} impacts {cve.AffectedProducts.Length} product groups. Immediate review is recommended.",
-            AffectedAssetsJson = JsonSerializer.Serialize(cve.AffectedProducts),
+            RiskScore = scoring.OverallScore,
+            RiskJustification = scoring.Justification,
+            ImpactSummary = $"{cve.Id} currently affects {sqlFacts.TotalVulnerableAssets} assets, including {sqlFacts.InternetFacingVulnerableAssets} internet-facing systems.",
+            AffectedAssetsJson = JsonSerializer.Serialize(sqlFacts.RankedAssets),
             RemediationStepsJson = JsonSerializer.Serialize(remediation),
             RawAgentOutputJson = JsonSerializer.Serialize(new
             {
                 planner = "mock",
                 reflectionApplied = true,
                 source = "MockAnalysisOrchestrator",
+                sqlFacts,
+                deterministicScore = scoring,
                 retrievedChunks = retrievedChunks.Select(chunk => new
                 {
                     sourceId = chunk.SourceId,

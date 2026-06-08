@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using PatchMindAI.Core.Enums;
 using PatchMindAI.Core.Interfaces;
+using Microsoft.Extensions.Options;
+using PatchMindAI.Core.Configuration;
 
 namespace PatchMindAI.API.Background;
 
@@ -10,16 +12,22 @@ public sealed class AnalysisJobWorker : BackgroundService
     private readonly IAnalysisCache _cache;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ILogger<AnalysisJobWorker> _logger;
+    private readonly AgentSettings _agentSettings;
+    private readonly object _circuitLock = new();
+    private int _consecutiveTransientFailures;
+    private DateTimeOffset? _circuitOpenUntilUtc;
 
     public AnalysisJobWorker(
         IAnalysisJobQueue queue,
         IAnalysisCache cache,
         IServiceScopeFactory serviceScopeFactory,
+        IOptions<AgentSettings> agentSettings,
         ILogger<AnalysisJobWorker> logger)
     {
         _queue = queue;
         _cache = cache;
         _serviceScopeFactory = serviceScopeFactory;
+        _agentSettings = agentSettings.Value;
         _logger = logger;
     }
 
@@ -50,6 +58,40 @@ public sealed class AnalysisJobWorker : BackgroundService
                     if (job is null)
                     {
                         _logger.LogWarning("Skipped message for unknown job {JobId}", message.JobId);
+                        await CompleteIfServiceBusAsync(message.JobId);
+                        continue;
+                    }
+
+                    if (job.Status == JobStatus.Completed || job.Status == JobStatus.Failed)
+                    {
+                        _logger.LogInformation("Suppressed duplicate message for finalized job {JobId} with status {Status}", job.Id, job.Status);
+                        await CompleteIfServiceBusAsync(job.Id);
+                        continue;
+                    }
+
+                    if (job.Status == JobStatus.Processing)
+                    {
+                        _logger.LogInformation("Suppressed duplicate in-flight message for job {JobId}", job.Id);
+                        await CompleteIfServiceBusAsync(job.Id);
+                        continue;
+                    }
+
+                    if (IsCircuitOpen(out var openUntil))
+                    {
+                        _logger.LogWarning(
+                            "OpenAI circuit breaker is open until {OpenUntil}. Re-queueing job {JobId}.",
+                            openUntil,
+                            job.Id);
+
+                        if (_queue is Infrastructure.Queues.AzureServiceBusAnalysisJobQueue azureBusQueue)
+                        {
+                            await azureBusQueue.AbandonMessageAsync(job.Id, "Circuit breaker is open");
+                        }
+                        else
+                        {
+                            await _queue.EnqueueAsync(message, stoppingToken);
+                            await Task.Delay(TimeSpan.FromMilliseconds(250), stoppingToken);
+                        }
                         continue;
                     }
 
@@ -70,6 +112,7 @@ public sealed class AnalysisJobWorker : BackgroundService
 
                         await resultRepository.SaveAsync(result, stoppingToken);
                         await _cache.SetResultAsync(result, stoppingToken);
+                        RecordSuccess();
 
                         job.Status = JobStatus.Completed;
                         job.CompletedAtUtc = DateTime.UtcNow;
@@ -86,6 +129,8 @@ public sealed class AnalysisJobWorker : BackgroundService
                     }
                     catch (Exception ex) when (IsTransientError(ex))
                     {
+                        RecordTransientFailure();
+
                         // Transient error - let Service Bus retry
                         _logger.LogWarning(ex, "Transient error processing job {JobId}, will retry", job.Id);
                         job.Status = JobStatus.Queued; // Reset to queued for retry
@@ -104,6 +149,8 @@ public sealed class AnalysisJobWorker : BackgroundService
                     }
                     catch (Exception ex)
                     {
+                        RecordSuccess();
+
                         // Permanent failure
                         job.Status = JobStatus.Failed;
                         job.FailureReason = ex.Message;
@@ -175,5 +222,46 @@ public sealed class AnalysisJobWorker : BackgroundService
         
         // Final attempt without catching
         return await operation();
+    }
+
+    private async Task CompleteIfServiceBusAsync(Guid jobId)
+    {
+        if (_queue is Infrastructure.Queues.AzureServiceBusAnalysisJobQueue azureBusQueue)
+        {
+            await azureBusQueue.CompleteMessageAsync(jobId);
+        }
+    }
+
+    private bool IsCircuitOpen(out DateTimeOffset? openUntil)
+    {
+        lock (_circuitLock)
+        {
+            openUntil = _circuitOpenUntilUtc;
+            return _circuitOpenUntilUtc.HasValue && _circuitOpenUntilUtc.Value > DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void RecordTransientFailure()
+    {
+        lock (_circuitLock)
+        {
+            _consecutiveTransientFailures++;
+            var threshold = Math.Max(1, _agentSettings.OpenAiCircuitBreakerFailureThreshold);
+
+            if (_consecutiveTransientFailures >= threshold)
+            {
+                _circuitOpenUntilUtc = DateTimeOffset.UtcNow.AddSeconds(
+                    Math.Max(5, _agentSettings.OpenAiCircuitBreakerCooldownSeconds));
+            }
+        }
+    }
+
+    private void RecordSuccess()
+    {
+        lock (_circuitLock)
+        {
+            _consecutiveTransientFailures = 0;
+            _circuitOpenUntilUtc = null;
+        }
     }
 }

@@ -11,11 +11,12 @@ public class CvePromptResolverTests
     public async Task ResolveAsync_ShouldResolveExactCveFromPrompt()
     {
         var nvdClient = new Mock<INvdClient>();
+        var knowledgeRetriever = new Mock<IKnowledgeRetriever>();
         nvdClient
             .Setup(client => client.GetCveByIdAsync("CVE-2021-44228", It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Cve { Id = "CVE-2021-44228" });
 
-        var resolver = new CvePromptResolver(nvdClient.Object);
+        var resolver = new CvePromptResolver(nvdClient.Object, knowledgeRetriever.Object);
 
         var result = await resolver.ResolveAsync("Analyze CVE-2021-44228 for impact", CancellationToken.None);
 
@@ -31,6 +32,7 @@ public class CvePromptResolverTests
     public async Task ResolveAsync_ShouldUseBestSemanticMatchWhenNoExactCveMentioned()
     {
         var nvdClient = new Mock<INvdClient>();
+        var knowledgeRetriever = new Mock<IKnowledgeRetriever>();
         nvdClient
             .Setup(client => client.SearchAsync("top critical unpatched vulnerabilities", 5, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new[]
@@ -39,7 +41,7 @@ public class CvePromptResolverTests
                 new Cve { Id = "CVE-2014-0160", BaseScore = 7.5, LastModifiedAtUtc = new DateTime(2024, 3, 1) }
             });
 
-        var resolver = new CvePromptResolver(nvdClient.Object);
+        var resolver = new CvePromptResolver(nvdClient.Object, knowledgeRetriever.Object);
 
         var result = await resolver.ResolveAsync("top critical unpatched vulnerabilities", CancellationToken.None);
 
@@ -56,7 +58,8 @@ public class CvePromptResolverTests
     public async Task ResolveAsync_ShouldReturnUnresolvedForEmptyPrompt()
     {
         var nvdClient = new Mock<INvdClient>();
-        var resolver = new CvePromptResolver(nvdClient.Object);
+        var knowledgeRetriever = new Mock<IKnowledgeRetriever>();
+        var resolver = new CvePromptResolver(nvdClient.Object, knowledgeRetriever.Object);
 
         var result = await resolver.ResolveAsync(string.Empty, CancellationToken.None);
 

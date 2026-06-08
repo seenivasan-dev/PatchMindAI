@@ -18,6 +18,9 @@ builder.Services.Configure<ServiceBusOptions>(builder.Configuration.GetSection(S
 builder.Services.Configure<RedisOptions>(builder.Configuration.GetSection(RedisOptions.SectionName));
 builder.Services.Configure<AzureOpenAIOptions>(builder.Configuration.GetSection(AzureOpenAIOptions.SectionName));
 builder.Services.Configure<AzureSearchOptions>(builder.Configuration.GetSection(AzureSearchOptions.SectionName));
+builder.Services.Configure<AgentSettings>(builder.Configuration.GetSection(AgentSettings.SectionName));
+var azureSearchOptions = builder.Configuration.GetSection(AzureSearchOptions.SectionName).Get<AzureSearchOptions>()
+    ?? new AzureSearchOptions();
 builder.Services.AddPatchMindInfrastructure(builder.Configuration);
 builder.Services.AddPatchMindAgents(builder.Configuration);
 builder.Services.AddHostedService(provider =>
@@ -25,8 +28,9 @@ builder.Services.AddHostedService(provider =>
     var queue = provider.GetRequiredService<IAnalysisJobQueue>();
     var cache = provider.GetRequiredService<IAnalysisCache>();
     var scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
+    var agentSettings = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentSettings>>();
     var logger = provider.GetRequiredService<ILogger<AnalysisJobWorker>>();
-    return new AnalysisJobWorker(queue, cache, scopeFactory, logger);
+    return new AnalysisJobWorker(queue, cache, scopeFactory, agentSettings, logger);
 });
 builder.Services.AddControllers();
 builder.Services.Configure<ApiBehaviorOptions>(options =>
@@ -63,7 +67,24 @@ builder.Services.AddApiVersioning(options =>
     options.SubstituteApiVersionInUrl = true;
 });
 builder.Services.AddHealthChecks()
-    .AddCheck<ProviderConfigurationHealthCheck>("provider_configuration", tags: ["ready"]);
+    .AddCheck<ProviderConfigurationHealthCheck>("provider_configuration", tags: ["ready"])
+    .AddCheck<SqlConnectivityHealthCheck>("sql_connectivity", tags: ["ready"])
+    .AddCheck<AzureOpenAiConnectivityHealthCheck>("openai_connectivity", tags: ["ready"]);
+
+if (!string.IsNullOrWhiteSpace(azureSearchOptions.Endpoint)
+    && !string.IsNullOrWhiteSpace(azureSearchOptions.IndexName))
+{
+    builder.Services.AddHealthChecks()
+        .AddCheck<AzureSearchConnectivityHealthCheck>("search_connectivity", tags: ["ready"]);
+}
+
+if (!string.IsNullOrWhiteSpace(azureSearchOptions.Endpoint)
+    && !string.IsNullOrWhiteSpace(azureSearchOptions.IndexName)
+    && azureSearchOptions.EnableVectorSearch)
+{
+    builder.Services.AddHealthChecks()
+        .AddCheck<VectorCoverageHealthCheck>("vector_coverage", tags: ["ready"]);
+}
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
@@ -94,7 +115,28 @@ using (var scope = app.Services.CreateScope())
     var searchSeeder = scope.ServiceProvider.GetService<AzureSearchSeeder>();
     if (searchSeeder != null)
     {
-        await searchSeeder.SeedAsync();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        try
+        {
+            await searchSeeder.SeedAsync();
+
+            if (azureSearchOptions.BackfillVectorsOnStartup)
+            {
+                var updated = await searchSeeder.BackfillVectorsAsync();
+                logger.LogInformation("Startup vector backfill completed. Updated {Count} documents.", updated);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (azureSearchOptions.FailStartupOnSeedError)
+            {
+                logger.LogError(ex, "Azure Search seeding failed and FailStartupOnSeedError=true. Stopping startup.");
+                throw;
+            }
+
+            // Search indexing is best-effort by default and should not block API startup.
+            logger.LogWarning(ex, "Azure Search seeding failed. Continuing startup without blocking API availability.");
+        }
     }
     else
     {

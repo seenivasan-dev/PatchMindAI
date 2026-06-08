@@ -8,9 +8,15 @@ public sealed class AzureOpenAIOptions
 
     public string DeploymentName { get; set; } = string.Empty;
 
+    public string? ParserDeploymentName { get; set; }
+
     public string Model { get; set; } = "gpt-4o";
 
+    public string? ParserModel { get; set; }
+
     public string? ApiKey { get; set; }
+
+    public string? ParserApiKey { get; set; }
 
     public bool UseManagedIdentity { get; set; } = true;
 

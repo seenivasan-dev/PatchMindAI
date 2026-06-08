@@ -29,17 +29,27 @@ public static class AgentsServiceCollectionExtensions
                 var options = provider.GetRequiredService<IOptions<AzureOpenAIOptions>>().Value;
                 var loggerFactory = provider.GetRequiredService<ILoggerFactory>();
 
+                var parserDeployment = string.IsNullOrWhiteSpace(options.ParserDeploymentName)
+                    ? options.DeploymentName
+                    : options.ParserDeploymentName;
+                var parserModel = string.IsNullOrWhiteSpace(options.ParserModel)
+                    ? options.Model
+                    : options.ParserModel;
+                var parserApiKey = string.IsNullOrWhiteSpace(options.ParserApiKey)
+                    ? options.ApiKey
+                    : options.ParserApiKey;
+
                 var apiVersion = string.IsNullOrWhiteSpace(options.ApiVersion)
                     ? null
                     : options.ApiVersion;
 
-                if (!string.IsNullOrWhiteSpace(options.ApiKey))
+                if (!string.IsNullOrWhiteSpace(parserApiKey))
                 {
                     return new AzureOpenAIChatCompletionService(
-                        options.DeploymentName,
+                        parserDeployment,
                         options.Endpoint,
-                        options.ApiKey,
-                        options.Model,
+                        parserApiKey,
+                        parserModel,
                         httpClient: null,
                         loggerFactory,
                         apiVersion);
@@ -52,10 +62,10 @@ public static class AgentsServiceCollectionExtensions
                 }
 
                 return new AzureOpenAIChatCompletionService(
-                    options.DeploymentName,
+                    parserDeployment,
                     options.Endpoint,
                     new DefaultAzureCredential(),
-                    options.Model,
+                    parserModel,
                     httpClient: null,
                     loggerFactory,
                     apiVersion);
@@ -86,6 +96,7 @@ public static class AgentsServiceCollectionExtensions
         }
 
         // Register multi-agent components
+        services.AddScoped<IDeterministicRiskScorer, DeterministicRiskScorer>();
         services.AddScoped<IPromptParserAgent, PromptParserAgent>();
         services.AddScoped<IPrioritizationAgent, PrioritizationAgent>();
         services.AddScoped<IReportAgent, ReportAgent>();

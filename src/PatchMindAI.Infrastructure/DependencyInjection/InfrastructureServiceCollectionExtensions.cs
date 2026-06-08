@@ -3,6 +3,7 @@ using Azure.Search.Documents;
 using Azure.Search.Documents.Indexes;
 using Azure;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -26,9 +27,17 @@ public static class InfrastructureServiceCollectionExtensions
         var agentSettings = configuration.GetSection(AgentSettings.SectionName).Get<AgentSettings>()
             ?? new AgentSettings();
 
+        services.AddMemoryCache();
+        services.Configure<AgentSettings>(configuration.GetSection(AgentSettings.SectionName));
+
         // Use EF-backed CVE repository instead of mock
         services.AddScoped<INvdClient, EfCveRepository>();
         services.AddScoped<ICvePromptResolver, CvePromptResolver>();
+        services.AddScoped<SqlFactsProvider>();
+        services.AddScoped<ISqlFactsProvider>(sp =>
+            ActivatorUtilities.CreateInstance<CachingSqlFactsProvider>(
+                sp,
+                sp.GetRequiredService<SqlFactsProvider>()));
         services.AddScoped<PatchMindDbSeeder>();
         services.Configure<AzureSearchOptions>(configuration.GetSection(AzureSearchOptions.SectionName));
 
@@ -39,7 +48,12 @@ public static class InfrastructureServiceCollectionExtensions
         {
             services.AddSingleton(_ => CreateSearchClient(azureSearchOptions));
             services.AddSingleton(_ => CreateSearchIndexClient(azureSearchOptions));
-            services.AddSingleton<IKnowledgeRetriever, AzureSearchKnowledgeRetriever>();
+            services.AddSingleton<IAzureSearchQueryRunner, AzureSearchQueryRunner>();
+            services.AddSingleton<AzureSearchKnowledgeRetriever>();
+            services.AddSingleton<IKnowledgeRetriever>(sp =>
+                ActivatorUtilities.CreateInstance<CachingKnowledgeRetriever>(
+                    sp,
+                    sp.GetRequiredService<AzureSearchKnowledgeRetriever>()));
             services.AddScoped<AzureSearchSeeder>();
         }
         else
@@ -50,15 +64,29 @@ public static class InfrastructureServiceCollectionExtensions
                     "AgentSettings:RequireAzurePipeline is true, but AzureSearch endpoint/index are not fully configured.");
             }
 
-            services.AddSingleton<IKnowledgeRetriever, CveKnowledgeRetriever>();
+            services.AddSingleton<CveKnowledgeRetriever>();
+            services.AddSingleton<IKnowledgeRetriever>(sp =>
+                ActivatorUtilities.CreateInstance<CachingKnowledgeRetriever>(
+                    sp,
+                    sp.GetRequiredService<CveKnowledgeRetriever>()));
         }
+
+        services.AddScoped<IVectorBackfillService, AzureSearchVectorBackfillService>();
 
         // Register DbContext
         var connectionString = configuration.GetConnectionString("PatchMindAIDb") 
             ?? "Server=(localdb)\\mssqllocaldb;Database=PatchMindAI;Trusted_Connection=True;MultipleActiveResultSets=true";
         services.AddDbContext<PatchMindDbContext>(options =>
-            options.UseSqlServer(connectionString)
-        );
+        {
+            if (IsSqliteConnectionString(connectionString))
+            {
+                options.UseSqlite(connectionString);
+            }
+            else
+            {
+                options.UseSqlServer(connectionString);
+            }
+        });
 
         // Use EF Core repositories (instead of in-memory)
         services.AddScoped<IAnalysisJobRepository, EfAnalysisJobRepository>();
@@ -153,5 +181,34 @@ public static class InfrastructureServiceCollectionExtensions
             {
                 ExcludeAzureCliCredential = true
             }));
+    }
+
+    private static bool IsSqliteConnectionString(string connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return false;
+        }
+
+        var value = connectionString.Trim();
+
+        // Examples:
+        // Data Source=/tmp/patchmind.db
+        // Data Source=:memory:
+        // Filename=/tmp/patchmind.db
+        if (value.Contains(":memory:", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (value.StartsWith("Data Source=/", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("DataSource=/", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("Filename=", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return value.Contains(".db", StringComparison.OrdinalIgnoreCase)
+            || value.Contains(".sqlite", StringComparison.OrdinalIgnoreCase);
     }
 }
