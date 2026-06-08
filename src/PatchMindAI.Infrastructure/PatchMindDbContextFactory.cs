@@ -35,7 +35,13 @@ public class PatchMindDbContextFactory : IDesignTimeDbContextFactory<PatchMindDb
                 "Connection string not found. Set PATCHMINDAI_DB_CONNECTION environment variable or configure PatchMindAIDb in appsettings.json");
         }
         
-        optionsBuilder.UseSqlServer(connectionString);
+        optionsBuilder.UseSqlServer(connectionString, sqlOptions =>
+        {
+            sqlOptions.EnableRetryOnFailure(
+                maxRetryCount: 5,
+                maxRetryDelay: TimeSpan.FromSeconds(30),
+                errorNumbersToAdd: null);
+        });
         return new PatchMindDbContext(optionsBuilder.Options);
     }
 }
