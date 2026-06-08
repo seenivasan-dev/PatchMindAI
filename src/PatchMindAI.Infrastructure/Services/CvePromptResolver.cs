@@ -19,10 +19,12 @@ public sealed class CvePromptResolver : ICvePromptResolver
     };
 
     private readonly INvdClient _nvdClient;
+    private readonly IKnowledgeRetriever _knowledgeRetriever;
 
-    public CvePromptResolver(INvdClient nvdClient)
+    public CvePromptResolver(INvdClient nvdClient, IKnowledgeRetriever knowledgeRetriever)
     {
         _nvdClient = nvdClient;
+        _knowledgeRetriever = knowledgeRetriever;
     }
 
     public async Task<CvePromptResolution> ResolveAsync(string prompt, CancellationToken cancellationToken = default)
@@ -50,6 +52,16 @@ public sealed class CvePromptResolver : ICvePromptResolver
             candidates = await ResolveByTokenSearchAsync(prompt, cancellationToken);
         }
 
+        // Vector/semantic search fallback via IKnowledgeRetriever (Azure AI Search or DB retriever)
+        if (candidates.Count == 0)
+        {
+            var vectorMatch = await ResolveByVectorSearchAsync(prompt, cancellationToken);
+            if (vectorMatch is not null)
+            {
+                return vectorMatch;
+            }
+        }
+
         var orderedCandidates = candidates
             .OrderByDescending(candidate => candidate.BaseScore)
             .ThenByDescending(candidate => candidate.LastModifiedAtUtc)
@@ -67,7 +79,7 @@ public sealed class CvePromptResolver : ICvePromptResolver
             IsExactMatch = false,
             MatchedCveId = bestCandidate.Id,
             Confidence = 0.6,
-            Explanation = $"Selected the best semantic match for the prompt: {bestCandidate.Id}.",
+            Explanation = $"Selected the best keyword match for the prompt: {bestCandidate.Id}.",
             CandidateCveIds = orderedCandidates.Select(candidate => candidate.Id).ToArray()
         };
     }
@@ -133,6 +145,49 @@ public sealed class CvePromptResolver : ICvePromptResolver
         }
 
         return null;
+    }
+
+    private async Task<CvePromptResolution?> ResolveByVectorSearchAsync(string prompt, CancellationToken cancellationToken)
+    {
+        var chunks = await _knowledgeRetriever.RetrieveAsync(prompt, 5, cancellationToken);
+        if (chunks.Count == 0)
+        {
+            return null;
+        }
+
+        // SourceId is the CVE ID (e.g. "CVE-2021-44228"). Verify it exists in the DB.
+        var distinctCveIds = chunks
+            .Where(c => !string.IsNullOrWhiteSpace(c.SourceId))
+            .Select(c => c.SourceId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var verified = new List<(string CveId, double Score)>();
+        foreach (var cveId in distinctCveIds)
+        {
+            var cve = await _nvdClient.GetCveByIdAsync(cveId, cancellationToken);
+            if (cve is not null)
+            {
+                var score = chunks.First(c => c.SourceId.Equals(cveId, StringComparison.OrdinalIgnoreCase)).Score;
+                verified.Add((cve.Id, score));
+            }
+        }
+
+        if (verified.Count == 0)
+        {
+            return null;
+        }
+
+        var best = verified.OrderByDescending(x => x.Score).First();
+        return new CvePromptResolution
+        {
+            IsResolved = true,
+            IsExactMatch = false,
+            MatchedCveId = best.CveId,
+            Confidence = Math.Round(Math.Min(best.Score / 10.0, 0.95), 2), // normalise 0-10 CVSS score to 0-0.95
+            Explanation = $"Resolved via vector search: {best.CveId} (retrieval score: {best.Score:F2}).",
+            CandidateCveIds = verified.OrderByDescending(x => x.Score).Select(x => x.CveId).ToArray()
+        };
     }
 
     private async Task<IReadOnlyList<Core.Domain.Cve>> ResolveByTokenSearchAsync(string prompt, CancellationToken cancellationToken)

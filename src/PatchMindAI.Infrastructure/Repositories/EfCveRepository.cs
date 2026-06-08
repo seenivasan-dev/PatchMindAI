@@ -33,19 +33,40 @@ public sealed class EfCveRepository : INvdClient
                 .ToArrayAsync(cancellationToken);
         }
 
-        // Search across multiple fields
+        var normalizedKeyword = keyword.Trim();
+        var pattern = $"%{normalizedKeyword}%";
+
+        // Keep server-side filtering limited to translatable scalar columns.
         var results = await _context.Cves
             .AsNoTracking()
             .Where(c =>
-                EF.Functions.Like(c.Id, $"%{keyword}%") ||
-                EF.Functions.Like(c.Description, $"%{keyword}%") ||
-                c.AffectedProducts.Any(p => EF.Functions.Like(p, $"%{keyword}%")))
+                EF.Functions.Like(c.Id, pattern) ||
+                EF.Functions.Like(c.Description, pattern) ||
+                EF.Functions.Like(c.VectorString, pattern))
             .OrderByDescending(c => c.BaseScore)
             .ThenByDescending(c => c.PublishedAtUtc)
             .Take(limit)
             .ToArrayAsync(cancellationToken);
 
-        return results;
+        if (results.Length > 0)
+        {
+            return results;
+        }
+
+        // Fallback for converted array columns (e.g., AffectedProducts) that EF can't translate with LIKE.
+        // Limit scan size to keep this bounded.
+        var productFallbackCandidates = await _context.Cves
+            .AsNoTracking()
+            .OrderByDescending(c => c.PublishedAtUtc)
+            .Take(500)
+            .ToArrayAsync(cancellationToken);
+
+        return productFallbackCandidates
+            .Where(c => c.AffectedProducts.Any(p => p.Contains(normalizedKeyword, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(c => c.BaseScore)
+            .ThenByDescending(c => c.PublishedAtUtc)
+            .Take(limit)
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<RetrievedChunk>> RetrieveAsync(string query, int topK = 5, CancellationToken cancellationToken = default)
