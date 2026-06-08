@@ -105,17 +105,40 @@ var app = builder.Build();
 // Apply database migrations and seed data on startup
 using (var scope = app.Services.CreateScope())
 {
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
     var context = scope.ServiceProvider.GetRequiredService<PatchMindDbContext>();
-    context.Database.Migrate();
+    
+    // Apply pending migrations
+    var pendingMigrations = await context.Database.GetPendingMigrationsAsync();
+    if (pendingMigrations.Any())
+    {
+        logger.LogInformation("Applying {Count} pending database migrations...", pendingMigrations.Count());
+        context.Database.Migrate();
+        logger.LogInformation("Database migrations completed.");
+    }
+    else
+    {
+        logger.LogInformation("No pending database migrations.");
+    }
 
-    var dbSeeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
-    await dbSeeder.SeedAsync();
+    // Seed database only if CVE table is empty
+    var hasCveData = await context.Cves.AnyAsync();
+    if (!hasCveData)
+    {
+        logger.LogInformation("CVE table is empty. Running database seeder...");
+        var dbSeeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
+        await dbSeeder.SeedAsync();
+        logger.LogInformation("Database seeding completed.");
+    }
+    else
+    {
+        logger.LogInformation("CVE data already exists. Skipping database seeding.");
+    }
 
     // Seed Azure Search index if configured
     var searchSeeder = scope.ServiceProvider.GetService<AzureSearchSeeder>();
     if (searchSeeder != null)
     {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         try
         {
             await searchSeeder.SeedAsync();
@@ -140,7 +163,6 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         logger.LogInformation("AzureSearchSeeder not registered (Azure Search not configured). Skipping search index seeding.");
     }
 }
