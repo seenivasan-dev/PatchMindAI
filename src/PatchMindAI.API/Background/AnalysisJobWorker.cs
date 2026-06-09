@@ -84,10 +84,11 @@ public sealed class AnalysisJobWorker : BackgroundService
 
                     if (IsCircuitOpen(out var openUntil))
                     {
+                        var waitTime = (openUntil.Value - DateTimeOffset.UtcNow).TotalSeconds;
                         _logger.LogWarning(
-                            "OpenAI circuit breaker is open until {OpenUntil}. Re-queueing job {JobId}.",
+                            "OpenAI circuit breaker is open until {OpenUntil}. Waiting {WaitSeconds}s before checking next job.",
                             openUntil,
-                            job.Id);
+                            Math.Max(1, waitTime));
 
                         if (_queue is Infrastructure.Queues.AzureServiceBusAnalysisJobQueue azureBusQueue)
                         {
@@ -96,8 +97,10 @@ public sealed class AnalysisJobWorker : BackgroundService
                         else
                         {
                             await _queue.EnqueueAsync(message, stoppingToken);
-                            await Task.Delay(TimeSpan.FromMilliseconds(250), stoppingToken);
                         }
+                        
+                        // Wait a bit before processing next message to avoid tight loop
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Max(5, waitTime / 2)), stoppingToken);
                         continue;
                     }
 
