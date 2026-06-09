@@ -102,68 +102,103 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
-// Apply database migrations and seed data on startup
+// Apply database migrations and seed data on startup - ONLY on first run
+// Use a marker file to prevent repeated database checks on cold starts
+var setupMarkerPath = Path.Combine("/home", ".patchmindai-setup-complete");
+var forceSetup = Environment.GetEnvironmentVariable("FORCE_DB_SETUP") == "true";
+
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    var context = scope.ServiceProvider.GetRequiredService<PatchMindDbContext>();
     
-    // Apply pending migrations
-    var pendingMigrations = await context.Database.GetPendingMigrationsAsync();
-    if (pendingMigrations.Any())
+    // Skip setup if marker exists and not forced
+    if (File.Exists(setupMarkerPath) && !forceSetup)
     {
-        logger.LogInformation("Applying {Count} pending database migrations...", pendingMigrations.Count());
-        context.Database.Migrate();
-        logger.LogInformation("Database migrations completed.");
+        logger.LogInformation("Database setup already completed (marker found). Skipping migrations and seeding for fast cold start.");
     }
     else
     {
-        logger.LogInformation("No pending database migrations.");
-    }
-
-    // Seed database only if CVE table is empty
-    var hasCveData = await context.Cves.AnyAsync();
-    if (!hasCveData)
-    {
-        logger.LogInformation("CVE table is empty. Running database seeder...");
-        var dbSeeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
-        await dbSeeder.SeedAsync();
-        logger.LogInformation("Database seeding completed.");
-    }
-    else
-    {
-        logger.LogInformation("CVE data already exists. Skipping database seeding.");
-    }
-
-    // Seed Azure Search index if configured
-    var searchSeeder = scope.ServiceProvider.GetService<AzureSearchSeeder>();
-    if (searchSeeder != null)
-    {
+        logger.LogInformation("Running first-time database setup...");
+        
+        var context = scope.ServiceProvider.GetRequiredService<PatchMindDbContext>();
+        
         try
         {
-            await searchSeeder.SeedAsync();
-
-            if (azureSearchOptions.BackfillVectorsOnStartup)
+            // Apply pending migrations
+            var pendingMigrations = await context.Database.GetPendingMigrationsAsync();
+            if (pendingMigrations.Any())
             {
-                var updated = await searchSeeder.BackfillVectorsAsync();
-                logger.LogInformation("Startup vector backfill completed. Updated {Count} documents.", updated);
+                logger.LogInformation("Applying {Count} pending database migrations...", pendingMigrations.Count());
+                context.Database.Migrate();
+                logger.LogInformation("Database migrations completed.");
+            }
+            else
+            {
+                logger.LogInformation("No pending database migrations.");
+            }
+
+            // Seed database only if CVE table is empty
+            var hasCveData = await context.Cves.AnyAsync();
+            if (!hasCveData)
+            {
+                logger.LogInformation("CVE table is empty. Running database seeder...");
+                var dbSeeder = scope.ServiceProvider.GetRequiredService<PatchMindDbSeeder>();
+                await dbSeeder.SeedAsync();
+                logger.LogInformation("Database seeding completed.");
+            }
+            else
+            {
+                logger.LogInformation("CVE data already exists. Skipping database seeding.");
+            }
+
+            // Seed Azure Search index if configured
+            var searchSeeder = scope.ServiceProvider.GetService<AzureSearchSeeder>();
+            if (searchSeeder != null)
+            {
+                try
+                {
+                    await searchSeeder.SeedAsync();
+
+                    if (azureSearchOptions.BackfillVectorsOnStartup)
+                    {
+                        var updated = await searchSeeder.BackfillVectorsAsync();
+                        logger.LogInformation("Startup vector backfill completed. Updated {Count} documents.", updated);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (azureSearchOptions.FailStartupOnSeedError)
+                    {
+                        logger.LogError(ex, "Azure Search seeding failed and FailStartupOnSeedError=true. Stopping startup.");
+                        throw;
+                    }
+
+                    // Search indexing is best-effort by default and should not block API startup.
+                    logger.LogWarning(ex, "Azure Search seeding failed. Continuing startup without blocking API availability.");
+                }
+            }
+            else
+            {
+                logger.LogInformation("AzureSearchSeeder not registered (Azure Search not configured). Skipping search index seeding.");
+            }
+            
+            // Create marker file to indicate setup is complete
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(setupMarkerPath)!);
+                await File.WriteAllTextAsync(setupMarkerPath, $"Setup completed at {DateTime.UtcNow:O}");
+                logger.LogInformation("Created setup marker file at {Path}", setupMarkerPath);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to create setup marker file. Setup will re-run on next cold start.");
             }
         }
         catch (Exception ex)
         {
-            if (azureSearchOptions.FailStartupOnSeedError)
-            {
-                logger.LogError(ex, "Azure Search seeding failed and FailStartupOnSeedError=true. Stopping startup.");
-                throw;
-            }
-
-            // Search indexing is best-effort by default and should not block API startup.
-            logger.LogWarning(ex, "Azure Search seeding failed. Continuing startup without blocking API availability.");
+            logger.LogError(ex, "Database setup failed during cold start. App will retry on next restart.");
+            throw;
         }
-    }
-    else
-    {
-        logger.LogInformation("AzureSearchSeeder not registered (Azure Search not configured). Skipping search index seeding.");
     }
 }
 
