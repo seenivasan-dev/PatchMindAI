@@ -41,6 +41,12 @@ public sealed class AnalysisJobWorker : BackgroundService
             await azureQueue.StartProcessingAsync();
         }
 
+        // Cold start warmup delay to avoid immediate rate limiting
+        var warmupDelay = TimeSpan.FromSeconds(10);
+        _logger.LogInformation("Waiting {Delay}s warmup period before processing jobs to avoid cold start rate limits...", warmupDelay.TotalSeconds);
+        await Task.Delay(warmupDelay, stoppingToken);
+        _logger.LogInformation("Warmup complete. Ready to process jobs.");
+
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -202,16 +208,36 @@ public sealed class AnalysisJobWorker : BackgroundService
     {
         for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
+            // Check circuit breaker before each attempt
+            if (attempt > 0 && IsCircuitOpen(out var openUntil))
+            {
+                _logger.LogWarning(
+                    "Circuit breaker is open until {OpenUntil}. Stopping retries.",
+                    openUntil);
+                throw new InvalidOperationException($"Circuit breaker is open until {openUntil}");
+            }
+
             try
             {
                 return await operation();
             }
             catch (Exception ex) when (IsTransientError(ex) && attempt < maxRetries)
             {
-                // Exponential backoff: 2^attempt seconds (1s, 2s, 4s)
+                // On rate limit (429), open circuit immediately to prevent further calls
+                if (ex.Message.Contains("HTTP 429") || ex.Message.Contains("too_many_requests"))
+                {
+                    RecordRateLimitFailure();
+                    _logger.LogWarning(
+                        "Rate limit hit (attempt {Attempt}/{MaxRetries}). Circuit breaker opened. Job will be requeued.",
+                        attempt + 1,
+                        maxRetries);
+                    throw; // Don't retry, let circuit breaker handle it
+                }
+
+                // For other transient errors, use exponential backoff
                 var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
                 _logger.LogWarning(
-                    "Rate limited (attempt {Attempt}/{MaxRetries}). Waiting {Delay}s before retry...",
+                    "Transient error (attempt {Attempt}/{MaxRetries}). Waiting {Delay}s before retry...",
                     attempt + 1,
                     maxRetries,
                     delay.TotalSeconds);
@@ -238,6 +264,22 @@ public sealed class AnalysisJobWorker : BackgroundService
         {
             openUntil = _circuitOpenUntilUtc;
             return _circuitOpenUntilUtc.HasValue && _circuitOpenUntilUtc.Value > DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void RecordRateLimitFailure()
+    {
+        // Immediately open circuit breaker on rate limit (429)
+        lock (_circuitLock)
+        {
+            _consecutiveTransientFailures = Math.Max(1, _agentSettings.OpenAiCircuitBreakerFailureThreshold);
+            // Longer cooldown for rate limits (60 seconds minimum)
+            var cooldownSeconds = Math.Max(60, _agentSettings.OpenAiCircuitBreakerCooldownSeconds);
+            _circuitOpenUntilUtc = DateTimeOffset.UtcNow.AddSeconds(cooldownSeconds);
+            _logger.LogWarning(
+                "Circuit breaker OPENED due to rate limit. Will stay open until {OpenUntil} ({CooldownSeconds}s cooldown).",
+                _circuitOpenUntilUtc,
+                cooldownSeconds);
         }
     }
 
