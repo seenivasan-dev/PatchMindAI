@@ -113,12 +113,11 @@ public sealed class AnalysisJobWorker : BackgroundService
                     {
                         _logger.LogInformation("Processing analysis job {JobId} for CVE {CveId}", job.Id, job.CveId);
                         
-                        // Retry logic with exponential backoff for rate limiting
-                        var result = await RetryWithBackoffAsync(
-                            async () => await orchestrator.RunAsync(job, stoppingToken),
-                            maxRetries: 3,
-                            stoppingToken);
+                        // No worker-level retries - let Service Bus handle redelivery
+                        // This prevents retry cascade: Worker retry × Service Bus redelivery = too many attempts
+                        var result = await orchestrator.RunAsync(job, stoppingToken);
 
+                        // Success - mark as complete
                         await resultRepository.SaveAsync(result, stoppingToken);
                         await _cache.SetResultAsync(result, stoppingToken);
                         RecordSuccess();

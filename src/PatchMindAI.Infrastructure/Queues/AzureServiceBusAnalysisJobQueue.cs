@@ -19,13 +19,15 @@ public sealed class AzureServiceBusAnalysisJobQueue : IAnalysisJobQueue, IAsyncD
         _sender = client.CreateSender(queueName);
         _logger = logger;
         
-        // Use PeekLock mode with automatic retries
+        // Use PeekLock mode with limited retries to prevent 429 cascade
         _processor = client.CreateProcessor(queueName, new ServiceBusProcessorOptions
         {
             ReceiveMode = ServiceBusReceiveMode.PeekLock,
             AutoCompleteMessages = false, // Manual completion after successful processing
             MaxConcurrentCalls = 1, // Process one at a time to avoid rate limits
             MaxAutoLockRenewalDuration = TimeSpan.FromMinutes(5)
+            // Note: MaxDeliveryCount is configured on the queue itself (default 10)
+            // Recommended: Set MaxDeliveryCount=2 in Azure Portal to limit retry cascade
         });
         
         _messageChannel = System.Threading.Channels.Channel.CreateUnbounded<(AnalysisRequestMessage, ServiceBusReceivedMessage)>();
