@@ -115,6 +115,20 @@ using (var scope = app.Services.CreateScope())
     if (File.Exists(setupMarkerPath) && !forceSetup)
     {
         logger.LogInformation("Database setup already completed (marker found). Skipping migrations and seeding for fast cold start.");
+        
+        // CRITICAL: Warm up database connection to avoid 30-second cold start on first API request
+        // Azure SQL Database on free/basic tier goes to sleep and takes 25-30s to wake up
+        logger.LogInformation("Warming up database connection...");
+        try
+        {
+            var context = scope.ServiceProvider.GetRequiredService<PatchMindDbContext>();
+            await context.Database.CanConnectAsync();
+            logger.LogInformation("Database connection warmed up successfully.");
+        }
+        catch (Exception warmupEx)
+        {
+            logger.LogWarning(warmupEx, "Database warmup failed (non-critical). First API request may be slower.");
+        }
     }
     else
     {
